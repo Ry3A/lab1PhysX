@@ -1,7 +1,7 @@
-#include <iostream>
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <windows.h>
 
 #include "PhysicsEngine.h"
@@ -37,9 +37,7 @@ namespace GameParams
     constexpr float CUE_DENSITY = 3.0f;
 
     constexpr float ROTATE_STEP = 0.08f;
-    constexpr float POWER_STEP = 0.35f;
-    constexpr float MIN_POWER = 1.2f;
-    constexpr float MAX_POWER = 6.0f;
+    constexpr float SHOT_IMPULSE = 1.0f;
 
     constexpr float STOP_LINEAR = 0.05f;
     constexpr float STOP_ANGULAR = 0.05f;
@@ -47,6 +45,11 @@ namespace GameParams
     constexpr float CUE_IDLE_OFFSET = 0.09f;
     constexpr float CUE_BACK_SWING = 0.16f;
     constexpr float CUE_FORWARD_SWING = 0.03f;
+
+    constexpr float STRIKE_ANIM_SPEED = 0.08f;
+    constexpr float STRIKE_BACK_PHASE = 0.35f;
+    constexpr float STRIKE_HIT_PHASE = 0.70f;
+    constexpr float STRIKE_TOTAL_PHASE = 1.0f;
 }
 
 PhysicsEngine* engine = nullptr;
@@ -63,7 +66,6 @@ PxMaterial* whiteBallMaterial = nullptr;
 PxMaterial* blackBallMaterial = nullptr;
 
 float aimYaw = 0.0f;
-float currentPower = 3.0f;
 
 bool isStrikeAnimating = false;
 bool hasAppliedStrikeImpulse = false;
@@ -76,21 +78,8 @@ PxVec3 CalculateShotDirection()
     return PxVec3(-sinf(aimYaw), 0.0f, -cosf(aimYaw)).getNormalized();
 }
 
-bool ExistsInScene(PxActor* actor)
-{
-    if (!actor)
-        return false;
-
-    std::vector<PxRigidActor*> actors = engine->GetActors(PxActorTypeFlag::eRIGID_DYNAMIC);
-    for (PxRigidActor* current : actors)
-    {
-        if (current == actor)
-            return true;
-    }
-    return false;
-}
-
-void RemoveActorWithShapes(PxRigidActor*& actor)
+template <typename T>
+void RemoveActorSafe(T*& actor)
 {
     if (!actor)
         return;
@@ -99,23 +88,23 @@ void RemoveActorWithShapes(PxRigidActor*& actor)
     SAFE_RELEASE(actor);
 }
 
+bool IsBodyMoving(PxRigidDynamic* body)
+{
+    if (!body)
+        return false;
+
+    return body->getLinearVelocity().magnitude() > GameParams::STOP_LINEAR ||
+        body->getAngularVelocity().magnitude() > GameParams::STOP_ANGULAR;
+}
+
 bool BallsAreMoving()
 {
-    std::vector<PxRigidActor*> actors = engine->GetActors(PxActorTypeFlag::eRIGID_DYNAMIC);
+    if (IsBodyMoving(cueBallActor))
+        return true;
 
-    for (PxRigidActor* actor : actors)
+    for (PxRigidDynamic* ball : rackBalls)
     {
-        if (actor == cueActor)
-            continue;
-
-        PxRigidDynamic* body = static_cast<PxRigidDynamic*>(actor);
-        if (!body)
-            continue;
-
-        if (body->getLinearVelocity().magnitude() > GameParams::STOP_LINEAR)
-            return true;
-
-        if (body->getAngularVelocity().magnitude() > GameParams::STOP_ANGULAR)
+        if (IsBodyMoving(ball))
             return true;
     }
 
@@ -125,9 +114,6 @@ bool BallsAreMoving()
 void UpdateCuePlacement(float extraOffset = 0.0f)
 {
     if (!cueActor || !cueBallActor || isGameFinished)
-        return;
-
-    if (!ExistsInScene(cueBallActor))
         return;
 
     PxVec3 whiteBallPos = cueBallActor->getGlobalPose().p;
@@ -149,6 +135,13 @@ void UpdateCuePlacement(float extraOffset = 0.0f)
     cueActor->setKinematicTarget(PxTransform(cuePos, cueRot));
 }
 
+void ResetStrikeAnimation()
+{
+    isStrikeAnimating = false;
+    hasAppliedStrikeImpulse = false;
+    strikeAnimState = 0.0f;
+}
+
 void BeginStrike()
 {
     if (isGameFinished || isStrikeAnimating || BallsAreMoving())
@@ -161,19 +154,27 @@ void BeginStrike()
 
 void AnimateStrike()
 {
-    if (!isStrikeAnimating || !cueBallActor || !ExistsInScene(cueBallActor))
+    if (!isStrikeAnimating)
         return;
 
-    strikeAnimState += 0.08f;
-
-    if (strikeAnimState < 0.35f)
+    if (!cueBallActor)
     {
-        float t = strikeAnimState / 0.35f;
+        ResetStrikeAnimation();
+        return;
+    }
+
+    strikeAnimState += GameParams::STRIKE_ANIM_SPEED;
+
+    if (strikeAnimState < GameParams::STRIKE_BACK_PHASE)
+    {
+        float t = strikeAnimState / GameParams::STRIKE_BACK_PHASE;
         UpdateCuePlacement(GameParams::CUE_BACK_SWING * t);
     }
-    else if (strikeAnimState < 0.70f)
+    else if (strikeAnimState < GameParams::STRIKE_HIT_PHASE)
     {
-        float t = (strikeAnimState - 0.35f) / 0.35f;
+        float t = (strikeAnimState - GameParams::STRIKE_BACK_PHASE) /
+            (GameParams::STRIKE_HIT_PHASE - GameParams::STRIKE_BACK_PHASE);
+
         float offset =
             GameParams::CUE_BACK_SWING * (1.0f - t) +
             GameParams::CUE_FORWARD_SWING * t;
@@ -182,20 +183,23 @@ void AnimateStrike()
 
         if (!hasAppliedStrikeImpulse && t > 0.70f)
         {
-            cueBallActor->addForce(CalculateShotDirection() * currentPower, PxForceMode::eIMPULSE);
+            cueBallActor->addForce(
+                CalculateShotDirection() * GameParams::SHOT_IMPULSE,
+                PxForceMode::eIMPULSE
+            );
             hasAppliedStrikeImpulse = true;
         }
     }
-    else if (strikeAnimState < 1.0f)
+    else if (strikeAnimState < GameParams::STRIKE_TOTAL_PHASE)
     {
-        float t = (strikeAnimState - 0.70f) / 0.30f;
+        float t = (strikeAnimState - GameParams::STRIKE_HIT_PHASE) /
+            (GameParams::STRIKE_TOTAL_PHASE - GameParams::STRIKE_HIT_PHASE);
+
         UpdateCuePlacement(GameParams::CUE_FORWARD_SWING * (1.0f - t));
     }
     else
     {
-        isStrikeAnimating = false;
-        hasAppliedStrikeImpulse = false;
-        strikeAnimState = 0.0f;
+        ResetStrikeAnimation();
         UpdateCuePlacement();
     }
 }
@@ -313,11 +317,8 @@ void CreateBallPyramid()
             float x = startX + rowAdvance * row;
             float z = (col - row * 0.5f) * step;
 
-            PxMaterial* materialToUse = redBallMaterial;
-
             bool isBlackBall = (row == 2 && col == 1);
-            if (isBlackBall)
-                materialToUse = blackBallMaterial;
+            PxMaterial* materialToUse = isBlackBall ? blackBallMaterial : redBallMaterial;
 
             PxRigidDynamic* createdBall = CreateBall(
                 PxVec3(x, GameParams::BALL_RADIUS, z),
@@ -381,29 +382,14 @@ bool IsInPocket(PxRigidDynamic* ball)
     if (!ball)
         return false;
 
-    PxVec3 pos = ball->getGlobalPose().p;
-
-    const float halfL = GameParams::TABLE_LENGTH * 0.5f;
-    const float halfW = GameParams::TABLE_WIDTH * 0.5f;
-
-    bool insideTableArea =
-        pos.x >= -halfL - 0.1f && pos.x <= halfL + 0.1f &&
-        pos.z >= -halfW - 0.1f && pos.z <= halfW + 0.1f;
-
-    if (!insideTableArea)
-        return false;
-
-    return pos.y < GameParams::POCKET_REMOVE_Y;
+    return ball->getGlobalPose().p.y < GameParams::POCKET_REMOVE_Y;
 }
 
 void ProcessPocketedBalls()
 {
-    if (cueBallActor && ExistsInScene(cueBallActor) && IsInPocket(cueBallActor))
+    if (cueBallActor && IsInPocket(cueBallActor))
     {
-        PxRigidActor* actor = cueBallActor;
-        RemoveActorWithShapes(actor);
-        cueBallActor = nullptr;
-
+        RemoveActorSafe(cueBallActor);
         isGameFinished = true;
         PrintConsoleLine(L"Поражение: биток попал в лузу.");
         return;
@@ -411,36 +397,29 @@ void ProcessPocketedBalls()
 
     for (PxRigidDynamic*& ball : rackBalls)
     {
-        if (!ball)
+        if (!ball || !IsInPocket(ball))
             continue;
 
-        if (!ExistsInScene(ball))
-            continue;
-
-        if (IsInPocket(ball))
+        if (ball == blackBallActor)
         {
-            if (ball == blackBallActor)
-            {
-                isGameFinished = true;
-                PrintConsoleLine(L"Поражение: в лузу попал чёрный шар.");
-            }
-
-            PxRigidActor* actor = ball;
-            RemoveActorWithShapes(actor);
-            ball = nullptr;
+            isGameFinished = true;
+            PrintConsoleLine(L"Поражение: в лузу попал чёрный шар.");
         }
+
+        RemoveActorSafe(ball);
     }
 }
 
 int CountActiveTargetBalls()
 {
-    int count = 0;
-    for (PxRigidDynamic* ball : rackBalls)
-    {
-        if (ball && ExistsInScene(ball))
-            ++count;
-    }
-    return count;
+    return static_cast<int>(std::count_if(
+        rackBalls.begin(),
+        rackBalls.end(),
+        [](PxRigidDynamic* ball)
+        {
+            return ball != nullptr;
+        }
+    ));
 }
 
 void UpdateGameState()
@@ -448,7 +427,7 @@ void UpdateGameState()
     if (isGameFinished)
         return;
 
-    if (!cueBallActor || !ExistsInScene(cueBallActor))
+    if (!cueBallActor)
     {
         isGameFinished = true;
         PrintConsoleLine(L"Поражение: биток был удалён со стола.");
@@ -482,7 +461,6 @@ void PrintHelp()
 {
     PrintConsoleLine(L"Управление:");
     PrintConsoleLine(L"J / L - повернуть кий");
-    PrintConsoleLine(L"I / K - увеличить / уменьшить силу удара");
     PrintConsoleLine(L"SPACE - выполнить удар");
     PrintConsoleLine(L"");
 }
@@ -492,7 +470,7 @@ void keyPressedCallback(unsigned char key, const PxTransform&)
     if (isGameFinished)
         return;
 
-    switch (toupper(key))
+    switch (std::toupper(key))
     {
     case 'J':
         if (!isStrikeAnimating && !BallsAreMoving())
@@ -508,18 +486,6 @@ void keyPressedCallback(unsigned char key, const PxTransform&)
             aimYaw += GameParams::ROTATE_STEP;
             UpdateCuePlacement();
         }
-        break;
-
-    case 'I':
-        currentPower = (std::min)(GameParams::MAX_POWER, currentPower + GameParams::POWER_STEP);
-        PrintConsoleLine(L"Сила удара:");
-        std::wcout << currentPower << L"\n";
-        break;
-
-    case 'K':
-        currentPower = (std::max)(GameParams::MIN_POWER, currentPower - GameParams::POWER_STEP);
-        PrintConsoleLine(L"Сила удара:");
-        std::wcout << currentPower << L"\n";
         break;
 
     case ' ':
@@ -539,7 +505,7 @@ void renderCallback()
     ProcessPocketedBalls();
     UpdateGameState();
 
-    if (!isStrikeAnimating && !BallsAreMoving() && cueBallActor && ExistsInScene(cueBallActor))
+    if (!isStrikeAnimating && !BallsAreMoving() && cueBallActor)
         UpdateCuePlacement();
 
     Snippets::startRender(mainCamera);

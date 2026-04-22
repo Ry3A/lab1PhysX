@@ -19,65 +19,101 @@ using namespace physx;
 
 namespace GameParams
 {
+    // Размеры стола
     constexpr float TABLE_LENGTH = 2.40f;
     constexpr float TABLE_WIDTH = 1.20f;
     constexpr float TABLE_THICKNESS = 0.06f;
 
+    // Размеры бортов
     constexpr float BOARD_HEIGHT = 0.10f;
     constexpr float BOARD_THICKNESS = 0.08f;
 
+    // Параметры шаров
     constexpr float BALL_RADIUS = 0.0285f;
     constexpr float BALL_DENSITY = 850.0f;
 
+    // Параметры луз
     constexpr float POCKET_RADIUS = 0.055f;
     constexpr float POCKET_REMOVE_Y = -0.05f;
 
+    // Параметры кия
     constexpr float CUE_RADIUS = 0.010f;
     constexpr float CUE_LENGTH = 0.55f;
     constexpr float CUE_DENSITY = 3.0f;
 
+    // Параметры управления ударом
     constexpr float ROTATE_STEP = 0.08f;
     constexpr float SHOT_IMPULSE = 1.0f;
 
+    // Пороги, ниже которых шар считаем остановившимся
     constexpr float STOP_LINEAR = 0.05f;
     constexpr float STOP_ANGULAR = 0.05f;
 
+    // Смещения кия относительно битка
     constexpr float CUE_IDLE_OFFSET = 0.09f;
     constexpr float CUE_BACK_SWING = 0.16f;
     constexpr float CUE_FORWARD_SWING = 0.03f;
 
+    // Параметры анимации удара
     constexpr float STRIKE_ANIM_SPEED = 0.08f;
     constexpr float STRIKE_BACK_PHASE = 0.35f;
     constexpr float STRIKE_HIT_PHASE = 0.70f;
     constexpr float STRIKE_TOTAL_PHASE = 1.0f;
 }
 
+// Глобальный объект физического движка.
+// Через него создаются материалы, шейпы, акторы и запускается симуляция.
 PhysicsEngine* engine = nullptr;
+
+// Основная камера сцены, используемая для рендера.
 Snippets::Camera* mainCamera = nullptr;
 
+// Указатель на биток.
 PxRigidDynamic* cueBallActor = nullptr;
+
+// Указатель на кий.
 PxRigidDynamic* cueActor = nullptr;
+
+// Указатель на чёрный шар.
 PxRigidDynamic* blackBallActor = nullptr;
 
+// Массив всех шаров пирамиды.
+// После удаления шара его указатель в векторе становится nullptr.
 std::vector<PxRigidDynamic*> rackBalls;
 
+// Материал красных шаров.
 PxMaterial* redBallMaterial = nullptr;
+
+// Материал битка.
 PxMaterial* whiteBallMaterial = nullptr;
+
+// Материал чёрного шара.
 PxMaterial* blackBallMaterial = nullptr;
 
+// Текущий угол поворота направления удара вокруг оси Y.
 float aimYaw = 0.0f;
 
+// Флаг: сейчас проигрывается анимация удара.
 bool isStrikeAnimating = false;
+
+// Флаг: импульс по битку уже был применён в текущей анимации удара.
 bool hasAppliedStrikeImpulse = false;
+
+// Текущее состояние анимации удара в диапазоне от 0 до 1.
 float strikeAnimState = 0.0f;
 
+// Флаг завершения игры.
 bool isGameFinished = false;
 
+ 
+/// Вычисляет нормализованное направление удара по текущему углу aimYaw.
 PxVec3 CalculateShotDirection()
 {
     return PxVec3(-sinf(aimYaw), 0.0f, -cosf(aimYaw)).getNormalized();
 }
 
+  
+/// Безопасно удаляет актор из сцены и освобождает его ресурсы.
 template <typename T>
 void RemoveActorSafe(T*& actor)
 {
@@ -88,6 +124,8 @@ void RemoveActorSafe(T*& actor)
     SAFE_RELEASE(actor);
 }
 
+  
+/// Проверяет, движется ли физическое тело с заметной линейной или угловой скоростью.
 bool IsBodyMoving(PxRigidDynamic* body)
 {
     if (!body)
@@ -97,6 +135,8 @@ bool IsBodyMoving(PxRigidDynamic* body)
         body->getAngularVelocity().magnitude() > GameParams::STOP_ANGULAR;
 }
 
+  
+/// Проверяет, движется ли хотя бы один шар на столе.
 bool BallsAreMoving()
 {
     if (IsBodyMoving(cueBallActor))
@@ -111,6 +151,8 @@ bool BallsAreMoving()
     return false;
 }
 
+  
+/// Обновляет положение и ориентацию кия относительно битка.
 void UpdateCuePlacement(float extraOffset = 0.0f)
 {
     if (!cueActor || !cueBallActor || isGameFinished)
@@ -135,6 +177,8 @@ void UpdateCuePlacement(float extraOffset = 0.0f)
     cueActor->setKinematicTarget(PxTransform(cuePos, cueRot));
 }
 
+  
+/// Сбрасывает состояние анимации удара к исходному.
 void ResetStrikeAnimation()
 {
     isStrikeAnimating = false;
@@ -142,6 +186,8 @@ void ResetStrikeAnimation()
     strikeAnimState = 0.0f;
 }
 
+  
+/// Запускает анимацию удара, если игра не закончена и шары не движутся.
 void BeginStrike()
 {
     if (isGameFinished || isStrikeAnimating || BallsAreMoving())
@@ -152,6 +198,8 @@ void BeginStrike()
     strikeAnimState = 0.0f;
 }
 
+  
+/// Проигрывает анимацию удара кием и в нужный момент прикладывает импульс к битку.
 void AnimateStrike()
 {
     if (!isStrikeAnimating)
@@ -204,6 +252,8 @@ void AnimateStrike()
     }
 }
 
+  
+/// Создаёт динамический шар с заданным материалом в указанной позиции.
 PxRigidDynamic* CreateBall(const PxVec3& pos, PxMaterial* material)
 {
     PxShape* ballShape = engine->CreateSphereShape(
@@ -230,6 +280,8 @@ PxRigidDynamic* CreateBall(const PxVec3& pos, PxMaterial* material)
     return ball;
 }
 
+  
+/// Создаёт основание бильярдного стола.
 void CreateTableBase(PxMaterial* material)
 {
     PxShape* tableShape = engine->CreateBoxShape(
@@ -246,6 +298,8 @@ void CreateTableBase(PxMaterial* material)
     SAFE_RELEASE(tableShape);
 }
 
+  
+/// Добавляет один статический борт заданного размера и положения.
 void AddBoard(const PxVec3& size, const PxVec3& pos, PxMaterial* material)
 {
     PxShape* boardShape = engine->CreateBoxShape(size, material);
@@ -253,6 +307,8 @@ void AddBoard(const PxVec3& size, const PxVec3& pos, PxMaterial* material)
     SAFE_RELEASE(boardShape);
 }
 
+  
+/// Создаёт все борта стола с учётом промежутков под лузы.
 void CreateBoards(PxMaterial* material)
 {
     const float L = GameParams::TABLE_LENGTH;
@@ -301,6 +357,8 @@ void CreateBoards(PxMaterial* material)
     );
 }
 
+  
+/// Создаёт пирамиду из 15 шаров и отдельно размещает биток.
 void CreateBallPyramid()
 {
     rackBalls.clear();
@@ -339,6 +397,8 @@ void CreateBallPyramid()
     );
 }
 
+  
+/// Создаёт кий как кинематическое тело и ставит его в стартовую позицию.
 void CreateCue(PxMaterial* material)
 {
     PxShape* cueShape = engine->CreateCapsuleShape(
@@ -362,6 +422,8 @@ void CreateCue(PxMaterial* material)
     UpdateCuePlacement();
 }
 
+  
+/// Печатает текст в консоль в формате wide string.
 void PrintConsoleText(const std::wstring& text)
 {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -372,11 +434,15 @@ void PrintConsoleText(const std::wstring& text)
     WriteConsoleW(hConsole, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
 }
 
+  
+/// Печатает строку текста в консоль с переводом строки.
 void PrintConsoleLine(const std::wstring& text)
 {
     PrintConsoleText(text + L"\n");
 }
 
+  
+/// Проверяет, находится ли шар ниже уровня, который считаем попаданием в лузу.
 bool IsInPocket(PxRigidDynamic* ball)
 {
     if (!ball)
@@ -385,6 +451,8 @@ bool IsInPocket(PxRigidDynamic* ball)
     return ball->getGlobalPose().p.y < GameParams::POCKET_REMOVE_Y;
 }
 
+  
+/// Обрабатывает шары, попавшие в лузы, и удаляет их из сцены.
 void ProcessPocketedBalls()
 {
     if (cueBallActor && IsInPocket(cueBallActor))
@@ -410,6 +478,8 @@ void ProcessPocketedBalls()
     }
 }
 
+  
+/// Подсчитывает количество ещё не удалённых целевых шаров.
 int CountActiveTargetBalls()
 {
     return static_cast<int>(std::count_if(
@@ -422,6 +492,8 @@ int CountActiveTargetBalls()
     ));
 }
 
+  
+/// Проверяет условия завершения игры и выводит результат.
 void UpdateGameState()
 {
     if (isGameFinished)
@@ -441,6 +513,8 @@ void UpdateGameState()
     }
 }
 
+  
+/// Собирает всю игровую сцену: стол, борта, шары и кий.
 void BuildGameScene()
 {
     PxMaterial* tableMaterial = engine->GetMaterial(0.75f, 0.65f, 0.20f);
@@ -457,6 +531,8 @@ void BuildGameScene()
     CreateCue(cueMaterial);
 }
 
+  
+/// Печатает подсказку по управлению.
 void PrintHelp()
 {
     PrintConsoleLine(L"Управление:");
@@ -465,6 +541,8 @@ void PrintHelp()
     PrintConsoleLine(L"");
 }
 
+  
+/// Обрабатывает нажатия клавиш управления кием и ударом.
 void keyPressedCallback(unsigned char key, const PxTransform&)
 {
     if (isGameFinished)
@@ -497,6 +575,8 @@ void keyPressedCallback(unsigned char key, const PxTransform&)
     }
 }
 
+  
+/// Выполняет один кадр симуляции и рендера сцены.
 void renderCallback()
 {
     engine->Simulate(1.0f / 60.0f);
@@ -517,12 +597,17 @@ void renderCallback()
     Snippets::finishRender();
 }
 
+  
+/// Освобождает основные ресурсы приложения при завершении.
 void exitCallback()
 {
     delete mainCamera;
     delete engine;
 }
 
+  
+/// Точка входа: создаёт камеру, инициализирует сцену и запускает цикл приложения.
+ 
 int main()
 {
     mainCamera = new Snippets::Camera(

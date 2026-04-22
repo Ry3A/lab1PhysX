@@ -43,7 +43,7 @@ namespace GameParams
 
     // ѕараметры управлени€ ударом
     constexpr float ROTATE_STEP = 0.08f;
-    constexpr float SHOT_IMPULSE = 1.0f;
+    constexpr float SHOT_IMPULSE = 5.0f;
 
     // ѕороги, ниже которых шар считаем остановившимс€
     constexpr float STOP_LINEAR = 0.05f;
@@ -316,7 +316,7 @@ void CreateBoards(PxMaterial* material)
     const float H = GameParams::BOARD_HEIGHT;
     const float T = GameParams::BOARD_THICKNESS;
 
-    const float cornerGap = GameParams::POCKET_RADIUS * 1.8f;
+    const float cornerGap = GameParams::POCKET_RADIUS * 1.4f;
     const float middleGap = GameParams::POCKET_RADIUS * 1.4f;
 
     float longPart = (L - 2.0f * cornerGap - middleGap) * 0.5f;
@@ -519,9 +519,9 @@ void BuildGameScene()
 {
     PxMaterial* tableMaterial = engine->GetMaterial(0.75f, 0.65f, 0.20f);
 
-    redBallMaterial = engine->GetMaterial(0.30f, 0.25f, 0.92f);
-    whiteBallMaterial = engine->GetMaterial(0.20f, 0.20f, 0.95f);
-    blackBallMaterial = engine->GetMaterial(0.40f, 0.40f, 0.85f);
+    redBallMaterial = engine->GetMaterial(0.30f, 0.25f, 0.6f);
+    whiteBallMaterial = engine->GetMaterial(0.20f, 0.20f, 0.6f);
+    blackBallMaterial = engine->GetMaterial(0.40f, 0.40f, 0.6f);
 
     PxMaterial* cueMaterial = engine->GetMaterial(0.40f, 0.35f, 0.15f);
 

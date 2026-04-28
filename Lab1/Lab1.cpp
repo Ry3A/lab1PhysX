@@ -390,6 +390,12 @@ void CreateBallPyramid()
         }
     }
 
+    float frontX = startX - rowAdvance;
+    float frontZ = 0.0f;
+    PxRigidDynamic* frontBall = CreateBall(
+        PxVec3(frontX, GameParams::BALL_RADIUS, frontZ),
+        redBallMaterial
+    );
     float whiteX = -GameParams::TABLE_LENGTH * 0.30f;
     cueBallActor = CreateBall(
         PxVec3(whiteX, GameParams::BALL_RADIUS, 0.0f),

@@ -1,11 +1,11 @@
-#include <vector>
-#include <algorithm>
-#include <cmath>
-#include <cctype>
-#include <cstdlib>
-#include <ctime>
-#include <iostream>
-#include <windows.h>
+#include <vector>       
+#include <algorithm>   
+#include <cmath>       
+#include <cctype>      
+#include <cstdlib>   
+#include <ctime>       
+#include <iostream>     
+#include <windows.h>    
 
 #include "PhysicsEngine.h"
 #include "snippetrender/SnippetRender.h"
@@ -13,6 +13,8 @@
 
 using namespace physx;
 
+// Макрос безопасно освобождает PhysX-объекты.
+// После release указатель обнуляется, чтобы случайно не обратиться к уже удалённому объекту.
 #define SAFE_RELEASE(obj) { \
     if (obj) {              \
         obj->release();     \
@@ -20,85 +22,194 @@ using namespace physx;
     }                       \
 }
 
+// Все основные числовые параметры симуляции вынесены отдельно,
+// чтобы их было удобно менять и объяснять при защите.
 namespace GameParams
 {
-    constexpr float FIELD_HALF_SIZE = 18.0f;
-    constexpr float WALL_HEIGHT = 2.5f;
-
+    // Радиус капсулы противника.
+    // Используется при создании основного коллайдера врага.
     constexpr float ENEMY_RADIUS = 0.45f;
+
+    // Полная высота капсулы противника.
+    // В PhysicsEngine она преобразуется в halfHeight для PxCapsuleGeometry.
     constexpr float ENEMY_HEIGHT = 2.0f;
+
+    // Плотность тела противника.
+    // Через неё PhysX рассчитывает массу и инерцию капсулы.
     constexpr float ENEMY_DENSITY = 35.0f;
 
+    // Максимальная дистанция raycast-выстрела.
+    // Если луч ни во что не попал, линия выстрела рисуется до этой дистанции.
     constexpr float SHOT_MAX_DISTANCE = 80.0f;
+
+    // Максимальный случайный разброс выстрела в градусах.
+    // Луч отклоняется по yaw и pitch в пределах этого угла.
     constexpr float SHOT_SPREAD_DEGREES = 2.5f;
+
+    // Импульс, который передаётся противнику при попадании пули.
     constexpr float SHOT_IMPULSE = 110.0f;
+
+    // Время отображения красной линии выстрела на экране.
     constexpr float SHOT_VISUAL_TIME = 0.45f;
 
+    // Радиус физической сферы-гранаты.
     constexpr float GRENADE_RADIUS = 0.22f;
+
+    // Плотность гранаты.
+    // Используется PhysX для расчёта массы физического тела.
     constexpr float GRENADE_DENSITY = 70.0f;
+
+    // Горизонтальная скорость броска гранаты вперёд от камеры.
     constexpr float GRENADE_THROW_SPEED = 18.0f;
+
+    // Дополнительная вертикальная скорость гранаты.
+    // Нужна, чтобы траектория была выраженно параболической.
     constexpr float GRENADE_UP_BOOST = 5.5f;
+
+    // Время от броска гранаты до взрыва.
     constexpr float GRENADE_FUSE_TIME = 2.7f;
+
+    // Радиус области, в которой взрыв может нанести урон противнику.
     constexpr float GRENADE_EXPLOSION_RADIUS = 5.5f;
+
+    // Максимальный урон от взрыва, если противник находится почти в центре взрыва.
     constexpr float GRENADE_MAX_DAMAGE = 100.0f;
+
+    // Максимальный импульс от взрыва, если противник находится почти в центре взрыва.
     constexpr float GRENADE_MAX_IMPULSE = 320.0f;
+
+    // Время отображения жёлтой сферы радиуса взрыва.
     constexpr float EXPLOSION_VISUAL_TIME = 0.55f;
 
+    // Радиус сферы обзора противника для простейшего AI.
+    // Если игрок находится ближе этого расстояния, противник начинает реагировать.
     constexpr float ENEMY_VIEW_RADIUS = 11.0f;
+
+    // Скорость горизонтального движения противника при поиске укрытия или отступлении.
     constexpr float ENEMY_MOVE_SPEED = 3.2f;
+
+    // Дополнительный отступ за препятствием при выборе точки укрытия.
+    // Нужен, чтобы противник становился не внутри стены, а немного за ней.
     constexpr float COVER_OFFSET = 1.35f;
+
+    // Дистанция, на которую противник пытается отойти от игрока,
+    // если подходящее укрытие не найдено.
     constexpr float FLEE_STEP = 7.0f;
 }
 
+// Информация об одной статической коробке-препятствии.
+// Эти данные нужны не только для физики, но и для AI при поиске укрытий.
 struct BoxObstacle
 {
+    // Указатель на физический статический актор препятствия.
     PxRigidStatic* actor = nullptr;
+
+    // Центр препятствия в мировых координатах.
     PxVec3 center = PxVec3(0.0f);
+
+    // Полный размер коробки по осям X, Y, Z.
     PxVec3 size = PxVec3(0.0f);
 };
 
+// Данные об активной гранате.
+// Помимо физического тела хранится таймер до взрыва.
 struct Grenade
 {
+    // Физическое динамическое тело гранаты.
     PxRigidDynamic* actor = nullptr;
+
+    // Сколько секунд осталось до взрыва.
     float fuseLeft = 0.0f;
 };
 
+// Глобальный объект-обёртка над PhysX.
 PhysicsEngine* engine = nullptr;
+
+// Камера snippets, через неё определяется позиция игрока и направление взгляда.
 Snippets::Camera* mainCamera = nullptr;
 
+// Материал пола.
 PxMaterial* groundMaterial = nullptr;
+
+// Материал стен и коробок-препятствий.
 PxMaterial* wallMaterial = nullptr;
+
+// Материал противника и частей ragdoll.
 PxMaterial* enemyMaterial = nullptr;
+
+// Материал гранаты с повышенной упругостью для отскоков.
 PxMaterial* grenadeMaterial = nullptr;
 
+// Основной противник до получения урона.
+// Представлен одной вертикальной капсулой.
 PxRigidDynamic* enemyCapsule = nullptr;
+
+// Последняя известная позиция игрока.
+// Обновляется по позиции камеры и используется AI противника.
 PxVec3 playerPosition(0.0f, 3.0f, 14.0f);
 
+// Список всех препятствий, которые могут служить укрытиями.
 std::vector<BoxObstacle> obstacles;
+
+// Список всех активных гранат, которые ещё не взорвались.
 std::vector<Grenade> grenades;
 
+// Флаг показывает, заменён ли обычный противник на ragdoll.
 bool enemyRagdollActive = false;
+
+// Флаг показывает, видел ли противник игрока на предыдущих кадрах.
+// Нужен, чтобы не печатать сообщение обнаружения каждый кадр.
 bool enemyHasSeenPlayer = false;
+
+// Флаг показывает, что противник сейчас движется к найденному укрытию.
 bool enemyMovingToCover = false;
 
+// Все физические тела, из которых состоит ragdoll.
 std::vector<PxRigidDynamic*> ragdollBodies;
+
+// Все joint-соединения ragdoll.
 std::vector<PxJoint*> ragdollJoints;
+
+// Туловище ragdoll.
 PxRigidDynamic* ragdollTorso = nullptr;
+
+// Голова ragdoll.
 PxRigidDynamic* ragdollHead = nullptr;
+
+// Левая рука ragdoll.
 PxRigidDynamic* ragdollLeftArm = nullptr;
+
+// Правая рука ragdoll.
 PxRigidDynamic* ragdollRightArm = nullptr;
+
+// Левая нога ragdoll.
 PxRigidDynamic* ragdollLeftLeg = nullptr;
+
+// Правая нога ragdoll.
 PxRigidDynamic* ragdollRightLeg = nullptr;
 
+// Нужно ли сейчас рисовать линию последнего выстрела.
 bool shotLineVisible = false;
+
+// Начальная точка линии выстрела.
 PxVec3 shotLineStart(0.0f);
+
+// Конечная точка линии выстрела.
 PxVec3 shotLineEnd(0.0f);
+
+// Сколько времени осталось показывать линию выстрела.
 float shotLineTimeLeft = 0.0f;
 
+// Нужно ли сейчас рисовать сферу радиуса последнего взрыва.
 bool explosionVisible = false;
+
+// Центр последнего взрыва.
 PxVec3 explosionCenter(0.0f);
+
+// Сколько времени осталось показывать радиус взрыва.
 float explosionTimeLeft = 0.0f;
 
+// Используется для корректного отображения русского текста.
 void PrintConsoleText(const std::wstring& text)
 {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -114,23 +225,31 @@ void PrintConsoleLine(const std::wstring& text)
     PrintConsoleText(text + L"\n");
 }
 
+// Ограничивает число диапазоном от 0 до 1.
+// Используется при расчёте коэффициента урона от взрыва.
 float Clamp01(float value)
 {
     return (std::max)(0.0f, (std::min)(1.0f, value));
 }
 
+// Возвращает случайное число с плавающей точкой в заданном диапазоне.
+// Используется для случайного разброса выстрела.
 float RandomFloat(float minValue, float maxValue)
 {
     float t = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
     return minValue + (maxValue - minValue) * t;
 }
 
+// Возвращает нормализованное направление взгляда камеры.
+// В snippets направление вперёд соответствует локальному вектору (0, 0, -1).
 PxVec3 GetCameraForward(const PxTransform& cameraTransform)
 {
     PxVec3 forward = cameraTransform.q.rotate(PxVec3(0.0f, 0.0f, -1.0f));
     return forward.getNormalized();
 }
 
+// Возвращает горизонтальное направление по XZ-плоскости.
+// Координата Y обнуляется, чтобы AI двигался только по земле.
 PxVec3 GetHorizontalDirection(const PxVec3& value, const PxVec3& fallback = PxVec3(1.0f, 0.0f, 0.0f))
 {
     PxVec3 result(value.x, 0.0f, value.z);
@@ -140,6 +259,8 @@ PxVec3 GetHorizontalDirection(const PxVec3& value, const PxVec3& fallback = PxVe
     return result.getNormalized();
 }
 
+// Создаёт направление выстрела с небольшим случайным разбросом.
+// Разброс добавляется относительно forward-вектора камеры.
 PxVec3 GetSpreadDirection(const PxVec3& forward)
 {
     const float maxAngle = GameParams::SHOT_SPREAD_DEGREES * PxPi / 180.0f;
@@ -156,6 +277,8 @@ PxVec3 GetSpreadDirection(const PxVec3& forward)
     return dir.getNormalized();
 }
 
+// Безопасно удаляет актор из PhysX-сцены и освобождает его память.
+// Передаётся ссылка на указатель, чтобы после удаления указатель стал nullptr.
 void RemoveActorSafe(PxRigidActor*& actor)
 {
     if (!actor)
@@ -165,11 +288,15 @@ void RemoveActorSafe(PxRigidActor*& actor)
     SAFE_RELEASE(actor);
 }
 
+// Проверяет, относится ли переданный актор к одной из частей ragdoll.
+// Это нужно, чтобы выстрелы могли попадать не только в обычную капсулу, но и в ragdoll.
 bool IsRagdollActor(const PxRigidActor* actor)
 {
     return std::find(ragdollBodies.begin(), ragdollBodies.end(), actor) != ragdollBodies.end();
 }
 
+// Создаёт одну динамическую часть ragdoll из готового shape.
+// Настраивает затухание, solver iterations и сохраняет часть в общий список ragdollBodies.
 PxRigidDynamic* CreateDynamicPart(PxShape* shape, const PxVec3& pos, float density)
 {
     PxRigidDynamic* actor = engine->AddDynamicActor(shape, pos, PxQuat(PxIdentity), density);
@@ -181,6 +308,8 @@ PxRigidDynamic* CreateDynamicPart(PxShape* shape, const PxVec3& pos, float densi
     return actor;
 }
 
+// Создаёт ограниченный spherical joint между двумя частями ragdoll.
+// Spherical joint выбран потому, что похож на шарнир сустава, а limit cone ограничивает неестественные вращения.
 PxSphericalJoint* AddLimitedBallJoint(
     PxRigidActor* parent,
     const PxVec3& parentAnchor,
@@ -203,6 +332,8 @@ PxSphericalJoint* AddLimitedBallJoint(
     return joint;
 }
 
+// Заменяет обычного противника-капсулу на ragdoll из шести физических частей.
+// Функция вызывается при первом получении урона от пули или взрыва.
 void ActivateRagdoll(const PxVec3& impulseDir, float impulseValue)
 {
     if (enemyRagdollActive || !enemyCapsule)
@@ -214,8 +345,6 @@ void ActivateRagdoll(const PxVec3& impulseDir, float impulseValue)
     PxRigidActor* oldEnemy = enemyCapsule;
     RemoveActorSafe(oldEnemy);
     enemyCapsule = nullptr;
-
-    PxPhysics* physics = engine->GetPhysics();
 
     ragdollTorso = CreateDynamicPart(
         engine->CreateBoxShape(PxVec3(0.65f, 1.00f, 0.35f), enemyMaterial),
@@ -251,12 +380,19 @@ void ActivateRagdoll(const PxVec3& impulseDir, float impulseValue)
         body->wakeUp();
     }
 
-    // Spherical joint подходит для плеч, шеи и таза, потому что разрешает вращение как шарнирное соединение,
-    // а cone-limit ограничивает неестественные повороты, например голову на 360 градусов.
+    // Шея: маленький диапазон вращения, чтобы голова не вращалась на 360 градусов.
     AddLimitedBallJoint(ragdollTorso, PxVec3(0.0f, 0.55f, 0.0f), ragdollHead, PxVec3(0.0f, -0.24f, 0.0f), PxPi / 7.0f, PxPi / 7.0f);
+
+    // Левое плечо: больший диапазон вращения, потому что рука должна свободнее падать.
     AddLimitedBallJoint(ragdollTorso, PxVec3(-0.36f, 0.32f, 0.0f), ragdollLeftArm, PxVec3(0.38f, 0.0f, 0.0f), PxPi / 2.8f, PxPi / 2.8f);
+
+    // Правое плечо: аналогично левому плечу.
     AddLimitedBallJoint(ragdollTorso, PxVec3(0.36f, 0.32f, 0.0f), ragdollRightArm, PxVec3(-0.38f, 0.0f, 0.0f), PxPi / 2.8f, PxPi / 2.8f);
+
+    // Левый тазобедренный сустав: ограничен сильнее, чем плечи.
     AddLimitedBallJoint(ragdollTorso, PxVec3(-0.20f, -0.52f, 0.0f), ragdollLeftLeg, PxVec3(0.0f, 0.47f, 0.0f), PxPi / 4.0f, PxPi / 4.0f);
+
+    // Правый тазобедренный сустав: аналогичен левому.
     AddLimitedBallJoint(ragdollTorso, PxVec3(0.20f, -0.52f, 0.0f), ragdollRightLeg, PxVec3(0.0f, 0.47f, 0.0f), PxPi / 4.0f, PxPi / 4.0f);
 
     enemyRagdollActive = true;
@@ -270,6 +406,8 @@ void ActivateRagdoll(const PxVec3& impulseDir, float impulseValue)
     PrintConsoleLine(L"Ragdoll: противник упал.");
 }
 
+// Прикладывает импульс к противнику.
+// Если ragdoll ещё не активен, сначала переводит противника в ragdoll.
 void ApplyImpulseToEnemy(const PxVec3& dir, float impulseValue)
 {
     if (!enemyRagdollActive)
@@ -285,6 +423,8 @@ void ApplyImpulseToEnemy(const PxVec3& dir, float impulseValue)
     }
 }
 
+// Создаёт противника в виде одной вертикальной капсулы.
+// До получения урона именно этот актор используется AI.
 void CreateEnemy(const PxVec3& pos)
 {
     PxShape* enemyShape = engine->CreateCapsuleShape(
@@ -307,6 +447,8 @@ void CreateEnemy(const PxVec3& pos)
     SAFE_RELEASE(enemyShape);
 }
 
+// Создаёт статическую коробку-препятствие и добавляет её в список obstacles.
+// Эти коробки используются как стены и как возможные укрытия для AI.
 PxRigidStatic* AddStaticBox(const PxVec3& pos, const PxVec3& size, PxMaterial* material)
 {
     PxShape* shape = engine->CreateBoxShape(size, material);
@@ -322,6 +464,8 @@ PxRigidStatic* AddStaticBox(const PxVec3& pos, const PxVec3& size, PxMaterial* m
     return actor;
 }
 
+// Проверяет raycast-ом, есть ли между двумя точками преграда до целевого актора.
+// Используется для проверки, закрывает ли стена противника от взрыва.
 bool RayHitsWallBeforeTarget(const PxVec3& from, const PxVec3& to, const PxRigidActor* targetActor)
 {
     PxVec3 dir = to - from;
@@ -339,6 +483,8 @@ bool RayHitsWallBeforeTarget(const PxVec3& from, const PxVec3& to, const PxRigid
     return hit.block.actor != targetActor;
 }
 
+// Проверяет, защищён ли противник от взрыва препятствием.
+// Если raycast от взрыва к противнику сначала попадает в стену, урон не засчитывается.
 bool IsEnemyProtectedFromExplosion(const PxVec3& explosionPos, const PxVec3& enemyPos)
 {
     PxRigidActor* visibleEnemyActor = nullptr;
@@ -355,6 +501,8 @@ bool IsEnemyProtectedFromExplosion(const PxVec3& explosionPos, const PxVec3& ene
     );
 }
 
+// Выполняет выстрел из позиции камеры.
+// Попадание определяется через PhysX raycast, а траектория отображается красной линией.
 void Shoot(const PxTransform& cameraTransform)
 {
     playerPosition = cameraTransform.p;
@@ -393,6 +541,8 @@ void Shoot(const PxTransform& cameraTransform)
     }
 }
 
+// Создаёт и бросает гранату из позиции камеры.
+// Граната является физическим динамическим телом, поэтому летит по параболе и отскакивает от окружения.
 void ThrowGrenade(const PxTransform& cameraTransform)
 {
     playerPosition = cameraTransform.p;
@@ -414,6 +564,8 @@ void ThrowGrenade(const PxTransform& cameraTransform)
     PrintConsoleLine(L"Граната: бросок.");
 }
 
+// Возвращает точку, которую считаем центром противника для расчёта урона от взрыва.
+// Для обычной капсулы берётся центр тела с небольшим подъёмом, для ragdoll — позиция туловища.
 PxVec3 GetEnemyDamageCenter()
 {
     if (enemyRagdollActive && ragdollTorso)
@@ -425,6 +577,8 @@ PxVec3 GetEnemyDamageCenter()
     return PxVec3(0.0f);
 }
 
+// Взрывает гранату по индексу из массива grenades.
+// Считает расстояние до противника, проверяет стену между ними, рассчитывает урон и импульс.
 void ExplodeGrenade(int index)
 {
     if (index < 0 || index >= static_cast<int>(grenades.size()))
@@ -484,6 +638,8 @@ void ExplodeGrenade(int index)
         << L"\n";
 }
 
+// Обновляет таймеры всех активных гранат.
+// Когда таймер гранаты заканчивается, вызывается ExplodeGrenade.
 void UpdateGrenades(float dt)
 {
     for (int i = static_cast<int>(grenades.size()) - 1; i >= 0; --i)
@@ -494,6 +650,8 @@ void UpdateGrenades(float dt)
     }
 }
 
+// Ищет ближайшую точку укрытия для противника.
+// Точка подходит, если между игроком и этой точкой первым raycast-ом находится выбранное препятствие.
 bool FindNearestCoverPoint(const PxVec3& enemyPos, const PxVec3& playerPos, PxVec3& outCoverPoint)
 {
     bool found = false;
@@ -536,6 +694,8 @@ bool FindNearestCoverPoint(const PxVec3& enemyPos, const PxVec3& playerPos, PxVe
     return found;
 }
 
+// Обновляет простейший AI противника.
+// Если игрок в сфере обзора, враг ищет укрытие; если укрытия нет, отступает от игрока.
 void UpdateEnemyAI(float dt)
 {
     if (enemyRagdollActive || !enemyCapsule)
@@ -603,6 +763,7 @@ void UpdateEnemyAI(float dt)
     ));
 }
 
+// Рисует простой прицел в центре экрана поверх 3D-сцены.
 void DrawCrosshair()
 {
     glMatrixMode(GL_PROJECTION);
@@ -644,6 +805,8 @@ void DrawCrosshair()
     glMatrixMode(GL_MODELVIEW);
 }
 
+// Рисует красную линию последнего raycast-выстрела.
+// Линия временная и скрывается после истечения shotLineTimeLeft.
 void DrawShotLine()
 {
     if (!shotLineVisible)
@@ -664,6 +827,7 @@ void DrawShotLine()
     glEnable(GL_LIGHTING);
 }
 
+// Рисует жёлтую проволочную сферу радиуса взрыва гранаты.
 void DrawExplosionSphere()
 {
     if (!explosionVisible)
@@ -682,6 +846,7 @@ void DrawExplosionSphere()
     glEnable(GL_LIGHTING);
 }
 
+// Создаёт всю игровую сцену: материалы, землю, препятствия и противника.
 void BuildScene()
 {
     groundMaterial = engine->GetMaterial(0.75f, 0.65f, 0.15f);
@@ -700,6 +865,7 @@ void BuildScene()
     CreateEnemy(PxVec3(0.0f, 1.7f, 3.5f));
 }
 
+// Печатает в консоль подсказку по управлению.
 void PrintHelp()
 {
     PrintConsoleLine(L"Управление:");
@@ -709,6 +875,7 @@ void PrintHelp()
     PrintConsoleLine(L"");
 }
 
+// Обрабатывает нажатия клавиш.
 void keyPressedCallback(unsigned char key, const PxTransform& cameraTransform)
 {
     playerPosition = cameraTransform.p;
@@ -728,6 +895,7 @@ void keyPressedCallback(unsigned char key, const PxTransform& cameraTransform)
     }
 }
 
+// Обновляет AI, физику, гранаты, таймеры визуальных эффектов и выполняет рендер.
 void renderCallback()
 {
     const float dt = 1.0f / 60.0f;
@@ -766,6 +934,7 @@ void renderCallback()
     Snippets::finishRender();
 }
 
+// Освобождает ресурсы перед завершением программы.
 void exitCallback()
 {
     for (PxJoint* joint : ragdollJoints)
@@ -782,6 +951,8 @@ void exitCallback()
     engine = nullptr;
 }
 
+// Точка входа в программу.
+// Инициализирует камеру, окно snippets, PhysX-сцену и запускает главный цикл GLUT.
 int main()
 {
     std::srand(static_cast<unsigned int>(std::time(nullptr)));

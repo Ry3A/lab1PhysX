@@ -23,7 +23,6 @@ using namespace physx;
 }
 
 // Все основные числовые параметры симуляции вынесены отдельно,
-// чтобы их было удобно менять и объяснять при защите.
 namespace GameParams
 {
     // Радиус капсулы противника.
@@ -951,8 +950,7 @@ void exitCallback()
     engine = nullptr;
 }
 
-// Точка входа в программу.
-// Инициализирует камеру, окно snippets, PhysX-сцену и запускает главный цикл GLUT.
+
 int main()
 {
     std::srand(static_cast<unsigned int>(std::time(nullptr)));
